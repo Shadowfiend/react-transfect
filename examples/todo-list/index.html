@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+  <head><title>Transfect Test</title></head>
+  <body>
+    <div class="container">
+      <section id="todo-list" data-transfect="TodoList">
+        <h2>Dat Title Lol</h2>
+        <ul>
+          <li data-transfect="TodoList.Item" class="item">
+            <label>
+              <input type="checkbox">
+              %text
+            </label>
+          </li>
+        </ul>
+      </section>
+    </div>
+
+    <div id="mount"></div>
+
+    <script type="text/javascript" src="../../build/react.js"></script>
+    <script type="text/javascript" src="../../build/react-dom.js"></script>
+    <script type="text/javascript" src="../../src/transfect.js"></script>
+
+    <script type="text/javascript">
+      var mainData = {
+        todos: [{id: 'boom', text: "Booyan!", done: true},
+                {id: 'booyan', text: "Shazammer!", done: false}]
+      };
+
+      var eventRegistry = {};
+
+      function registerForEvent(eventName, handlerFn) {
+        pushInArray(eventRegistry, eventName, handlerFn);
+      }
+
+      function emit(source, eventName, event) {
+        if (typeof eventRegistry[eventName] !== 'undefined') {
+          var handlers = eventRegistry[eventName];
+          for (var i = 0; i < handlers.length; ++i) {
+            handlers[i](source, event);
+          }
+        }
+      }
+
+      function emitter(source, event) {
+        return function(value) {
+          emit(source, event, value);
+        }
+      }
+
+      window.TodoList =
+        Transfect.createComponent({
+          transform: function() {
+            return {
+              "h2 *": "My Todos!",
+              ".item $": this.state.todos
+            }
+          },
+          componentWillMount: function() {
+            var self = this;
+            registerForEvent('todo-state-changed', function(todoId, event) {
+              for (var i = 0; i < mainData.todos.length; ++i) {
+                if (mainData.todos[i].id == todoId) {
+                  mainData.todos[i].done = event.target.checked
+                }
+              }
+
+              self.setState(mainData);
+            });
+          },
+          getInitialState: function() {
+            return mainData;
+          }
+        })
+      TodoList.Item =
+        Transfect.createComponent({
+          transform: function() {
+            return {
+              "label %text": this.props.text,
+              "@checkbox [checked]": this.props.done,
+              "@checkbox [onchange]": emitter(this.props.id, 'todo-state-changed')
+            }
+          }
+        })
+
+      transfect("todo-list")
+    </script>
+  </body>
+</html>

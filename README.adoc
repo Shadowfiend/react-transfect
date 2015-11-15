@@ -1,0 +1,110 @@
+## Transfect
+
+Transfect is a library designed for use with React. It provides a view-first
+approach to component creation. In particular, you can define your component
+hierarchy in plain HTML and have it read from the DOM. The HTML can reference
+Transfect components (which are just React components with a little sugar),
+which will then be tasked with rendering the template according to their data.
+
+Transfect is based around a simplified CSS vocabulary along with a couple of
+helper attributes.
+
+### Sample
+
+Here's how you might define a simple todo list view:
+
+```html
+<section id="todo-list" data-transfect="TodoList">
+  <h2>Todo List Name!</h2>
+  <ul>
+    <li data-transfect="TodoList.Item" class="item">
+      <label>
+        <input type="checkbox">
+        %text
+      </label>
+    </li>
+  </ul>
+</section>
+```
+
+Notice that there is absolutely no logic in this template---iteration, data
+interpolation, etc. One of the main goals of transfect is to completely sever
+the view from the rendering logic. What we provide instead are two component
+invocations, marked by the `data-transfect` attribute. These reference
+transfect components that will be passed the invoking element and its child
+hierarchy.
+
+Here's how you might bind the above in a simplified world:
+
+```javascript
+TodoList =
+  Transfect.createComponent({
+    transform: function() {
+      return {
+        "h2 *": "My Todos!",
+        ".item $": this.state.todos
+      }
+    },
+  })
+TodoList.Item =
+  Transfect.createComponent({
+    transform: function() {
+      return {
+        "label %text": this.props.text,
+        "@checkbox [checked]": this.props.done,
+        "@checkbox [onchange]": emitter(this.props.id, 'todo-state-changed')
+      }
+    }
+  })
+
+transfect('todo-list');
+```
+
+This will lift the todo list from the DOM, turn it into a React virtual DOM,
+and mount the result. Additionally, it will evaluate the transfect component
+invocations and bind the appropriate components where they belong.
+
+Components provide a `transform` method that returns the transformations they
+want to apply to their child DOM template. Transformations consist of a bind
+expression and a value. The bind expression consists of a selector and a bind
+point. The bind points seen above are `*` (replace the content of the element),
+`$` (set the props of the component), `%text` (find the placeholder `%text` and
+replace it with the value), and `[...]` (set the attribute of an element, or in
+React terms a particular prop).
+
+The bind value can be a static reference, but it can also be function. In the
+case of binding an event attribute, the function is assigned as an event
+handler. However, in all other cases, the function is invoked at bind time with
+the element in its current state. The return value of the bind is then used in
+place of the element.
+
+You can also provide an array as a bind value. In cases where an array is
+provided, the element is cloned and boundonce for each value in the array. This
+is why `.item` in the above example will be reproduced once for each value in
+the `todos` array.
+
+### Example
+
+A full version of the above example is at
+[`examples/todo-list`](examples/todo-list). It requires a `build/` directory
+with a react build in it for now, as well as a compiled version of
+`transfect.coffee`.
+
+### License
+
+react-transfect is provided under the terms of the MIT License. See the
+[`LICENSE`](LICENSE) file in this same directory.
+
+### Author
+
+react-transfect is copyright me, Antonio Salazar Cardozo, and licensed uner the
+terms of the MIT License. No warranties are made, express or implied. See the
+LICENSE file in this same directory for more details.
+
+I've been known to tweet at http://twitter.com/lightfiend .
+
+I am the UI/UX Team Lead at [Elemica](http://elemica.com/), where we're working
+on strapping a rocket to the back of supply chain management to shoot it into
+the future using Scala, Lift, and a variety of other cool tools. We're always
+lookin' for good folks to work with, so give me a holler if you're looking for
+some challenging work that's changing the world in invisible ways.
