@@ -3,6 +3,8 @@ transfectBaseScope = window
 
 debug = true
 
+window.Transfect = {}
+
 isComponent = (element) ->
   typeof element.type != 'string'
 
@@ -12,35 +14,49 @@ camelify =
   'onchange': 'onChange'
   'onclick': 'onClick'
 
+invariant = (condition, message) ->
+  if debug && ! condition
+    throw message
+
 applyBind = (bindPoint, toBind, element) ->
-  switch
-    when bindPoint.match /^\$/
-      if debug && ! isComponent(element)
-        throw "Trying to bind props to an HTML element."
+  resultingElement =
+    switch
+      when ! bindPoint?
+        invariant element.type, "Trying to replace an element with a non-element: #{element}."
 
-      React.cloneElement(element, toBind)
+        toBind
 
-    when bindPoint.match /^\[/
-      attribute = bindPoint.substring(1, bindPoint.length - 1)
+      when bindPoint.match /^\$/
+        invariant isComponent(element), "Trying to bind props to an HTML element."
 
-      updateObject = {}
-      updateObject[camelify[attribute] || attribute] = toBind
+        React.cloneElement(element, { data: toBind })
 
-      React.cloneElement(element, updateObject)
+      when bindPoint.match /^\[/
+        attribute = bindPoint.substring(1, bindPoint.length - 1)
 
-    when bindPoint.match /^%/
-      React.cloneElement(
-        element,
-        children: React.Children.map(element.props.children, (child) ->
-          if typeof child == 'string'
-            child.replace ///(?=\W)#{bindPoint}(?=\W)///g, toBind
-          else
-            child
+        updateObject = {}
+        updateObject[camelify[attribute] || attribute] = toBind
+
+        React.cloneElement(element, updateObject)
+
+      when bindPoint.match /^%/
+        React.cloneElement(
+          element,
+          children: React.Children.map(element.props.children, (child) ->
+            if typeof child == 'string'
+              child.replace ///(?=\W)#{bindPoint}(?=\W)///g, toBind
+            else
+              child
+          )
         )
-      )
 
-    when bindPoint == "*"
-      React.cloneElement(element, children: toBind)
+      when bindPoint == "*"
+        React.cloneElement(element, children: toBind)
+
+  if resultingElement.props[transfectAttribute]?
+    parseComponents resultingElement, true
+  else
+    resultingElement
 
 compileBind = (context, bindPoint, transform) ->
   (element) ->
@@ -48,14 +64,21 @@ compileBind = (context, bindPoint, transform) ->
     # transformations. Other functions are, and are executed in the passed
     # context and given the element that's being transformed.
     toBind =
-      if typeof transform == 'function' && ! bindPoint.match /^\[on/
+      if typeof transform == 'function' && ! bindPoint?.match /^\[on/
         transform.call context, element
+      else if typeof transform == "undefined"
+        []
       else
         transform
 
     if Array.isArray(toBind)
       for bindValue in toBind
         applyBind bindPoint, bindValue, element
+    else if Immutable?.List?.isList(toBind) || Immutable?.Seq?.isSeq(toBind)
+      toBind
+        .map((_) ->
+          applyBind(bindPoint, _, element))
+        .toArray()
     else
       [applyBind(bindPoint, toBind, element)]
 
@@ -64,9 +87,10 @@ window.pushInArray = (container, key, value) ->
   innerContainer.push(value)
   container[key] = innerContainer
 
-compileTransform = (context, transformSpec) ->
+Transfect.compileTransform = compileTransform = (context, transformSpec) ->
   keys = (key for key of transformSpec)
 
+  topLevel = []
   byId = {}
   byClass = {}
   byTag = {}
@@ -76,31 +100,47 @@ compileTransform = (context, transformSpec) ->
     [selector, bindPoint] = spec.split ' '
 
     applierFn = compileBind(context, bindPoint, transform)
+    applierFn._generatingSpec = [spec, transform]
 
-    if selector.match /^\./
-      pushInArray byClass, selector.substring(1), applierFn
-    else if selector.match /^#/
-      pushInArray byId, selector.substring(1), applierFn
-    else if selector.match /^@/
-      pushInArray byType, selector.substring(1), applierFn
-    else
-      pushInArray byTag, selector, applierFn
+    switch
+      when selector == '^'
+        topLevel.push applierFn
+      when selector.match /^\./
+        pushInArray byClass, selector.substring(1), applierFn
+      when selector.match /^#/
+        pushInArray byId, selector.substring(1), applierFn
+      when selector.match /^@/
+        pushInArray byType, selector.substring(1), applierFn
+      else
+        pushInArray byTag, selector, applierFn
 
-  runTransform = (element) ->
+  runTransform = (element, childInvocation = false) ->
     if typeof element == 'string'
       # Text nodes are transformed by their parent.
-      [element]
+      text = element
+      clearedLeadingWhitespace = text.replace(/^\s+/g, '')
+
+      if clearedLeadingWhitespace.length > 0
+        [clearedLeadingWhitespace]
+      else
+        []
     else
-      applicableBinds = []
-      if element.props.type? && byType[element.props.type]?
-        applicableBinds.push.apply applicableBinds, byType[element.props.type]
-      if byTag[element.type]
-        applicableBinds.push.apply applicableBinds, byTag[element.type]
-      if element.props.id? && byId[element.props.id]
-        applicableBinds.push.apply applicableBinds, byId[element.props.id]
-      if element.props.classes
-        for className in element.props.classes when byClass[className]
-          applicableBinds.push.apply applicableBinds, byClass[className]
+      applicableBinds =
+        if ! childInvocation
+          topLevel.slice()
+        else
+          base = []
+          if element.props.type? && byType[element.props.type]?
+            base.push.apply base, byType[element.props.type]
+          if byTag[element.type] || byTag[element.type.displayName]
+            base.push.apply base, byTag[element.type] || byTag[element.type.displayName]
+          if element.props.id? && byId[element.props.id]
+            base.push.apply base, byId[element.props.id]
+          if element.props.classes
+            for className in element.props.classes when byClass[className]
+              base.push.apply base, byClass[className]
+
+          base
 
       transformed =
         applicableBinds.reduce(
@@ -121,7 +161,7 @@ compileTransform = (context, transformSpec) ->
         if ! isComponent(element)
           collectedChildren = []
           React.Children.forEach element.props.children, (child) ->
-            collectedChildren.push.apply collectedChildren, runTransform(child)
+            collectedChildren.push.apply collectedChildren, runTransform(child, true)
 
           React.cloneElement(
             element,
@@ -137,22 +177,58 @@ baseRender = ->
 
   baseElement = React.Children.only @props.children
 
-  transformedChildren = []
-  React.Children.forEach baseElement.props.children, (element) ->
-    transformedChildren.push.apply transformedChildren, compiledTransform(element)
+  compiledTransform(baseElement)[0]
 
-  React.cloneElement(baseElement, children: transformedChildren)
+window.Transfect.createComponent = (body, args...) ->
+  invariant ! body.render?, "Use transform to define your rendering behavior for a Transfect component."
 
-window.Transfect =
-  createComponent: (body, args...) ->
-    if body.render
-      throw "Use transform to define your rendering behavior for a Transfect component."
+  withRender = { render: baseRender }
+  for key, value of body
+    withRender[key] = value
 
-    withRender = { render: baseRender }
-    for key, value of body
-      withRender[key] = value
+  React.createClass.apply React, [withRender].concat(args)
 
-    React.createClass.apply React, [withRender].concat(args)
+## Given a React element structure, parse out a transfect component invocation,
+## if it exists, and insert a component accordingly.
+parseComponents = (element, recurse = false) ->
+  attributes = element.props
+
+  if recurse
+    attributes.children =
+      React.Children.map(
+        attributes.children,
+        (child) ->
+          if child.props?
+            parseComponents(child, true)
+          else
+            child
+      )
+
+  componentName = attributes[transfectAttribute]
+  if componentName
+    reactProps = {}
+    finalAttributes = {}
+    for attribute of attributes when attribute != transfectAttribute
+      if attribute.match /^data-/
+        reactProps[attribute.substring(5)] = attributes[attribute]
+      else if attribute == 'classes' || attribute == 'className' || attribute == 'id'
+        reactProps[attribute] = finalAttributes[attribute] = attributes[attribute]
+      else
+        finalAttributes[camelify[attribute] || attribute] = attributes[attribute]
+
+    newElement =
+      React.createElement element.type, finalAttributes
+
+    component =
+      componentName
+        .split('.')
+        .reduce ((scope, name) -> scope[name]), transfectBaseScope
+
+    invariant component?, "Failed to find component #{componentName}."
+
+    React.createElement component, reactProps, newElement
+  else
+    React.cloneElement(element, attributes)
 
 reactify = (rootNode) ->
   # TODO Multimethod?
@@ -168,39 +244,17 @@ reactify = (rootNode) ->
 
     children = (reactify(childNode) for childNode in rootNode.childNodes)
 
-    componentName = attributes[transfectAttribute]
-    if componentName
-      reactProps = {}
-      finalAttributes = {}
-      for attribute of attributes
-        if attribute.match /^data-/
-          reactProps[attribute.substring(5)] = attributes[attribute]
-        else if attribute == 'class'
-          reactProps.className = finalAttributes.className = attributes[attribute]
-          reactProps.classes = attributes[attribute].split ' '
-        else
-          finalAttributes[camelify[attribute]] = attributes[attribute]
+    if attributes['class']?
+      attributes.className = attributes['class']
+      attributes.classes = attributes['class'].split ' '
+      delete attributes['class']
 
-      element =
-        React.createElement.apply(
-          React,
-          [tag.toLowerCase(), finalAttributes].concat(children)
-        )
-
-      component =
-        componentName
-          .split('.')
-          .reduce ((scope, name) -> scope[name]), transfectBaseScope
-
-      React.createElement component, reactProps, element
-    else
-      if attributes['class']?
-        attributes.classes = attributes['class'].split ' '
-
+    parseComponents(
       React.createElement.apply(
         React,
         [tag.toLowerCase(), attributes].concat(children)
       )
+    )
 
 window.transfect = (template, mountLocation) ->
   templateElement =
